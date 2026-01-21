@@ -151,13 +151,15 @@ if st.session_state.documents_processed and st.session_state.vector_store:
             from langchain_core.output_parsers import StrOutputParser
             from langchain_core.prompts import ChatPromptTemplate
             from langchain_core.runnables import RunnablePassthrough
-            from langchain_google_genai import ChatGoogleGenerativeAI
+            from langchain_community.llms import HuggingFacePipeline
+            from transformers import pipeline
 
             # Set up retriever
             retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 3})
 
-            # Set up LLM
-            llm = ChatGoogleGenerativeAI(model='gemini-2.5-flash')
+            # Set up LLM (using local HuggingFace model)
+            pipe = pipeline("text-generation", model="microsoft/DialoGPT-medium")
+            llm = HuggingFacePipeline(pipeline=pipe)
 
             # Create prompt template
             template = """Answer the question based only on the following context:
