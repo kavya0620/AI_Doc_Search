@@ -43,3 +43,4 @@ pypdf
 unstructured[local-inference]
 python-pptx
 openpyxl
+python-dotenv
