@@ -107,7 +107,7 @@ with st.sidebar:
                     splits = text_splitter.split_documents(all_docs)
 
                     # Create embeddings and vector store
-                    embeddings = GoogleGenerativeAIEmbeddings(model='gemini-embedding-001')
+                    embeddings = GoogleGenerativeAIEmbeddings(model='models/embedding-001')
                     st.session_state.vector_store = Chroma.from_documents(splits, embeddings)
 
                     st.session_state.documents_processed = True
