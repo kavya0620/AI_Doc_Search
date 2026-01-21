@@ -1,0 +1,54 @@
+Artificial Intelligence is the simulation of human intelligence by machines. 
+It enables computers to perform tasks such as learning, reasoning, and decision making.
+
+Machine Learning is a subset of Artificial Intelligence that allows systems to learn from data without explicit programming.
+
+Deep Learning is a branch of Machine Learning that uses neural networks with many layers to analyze complex patterns.
+
+Natural Language Processing helps computers understand and generate human language.
+
+This project is an AI based document search and knowledge retrieval system.
+
+The system loads documents provided by the user and converts them into smaller text chunks.
+
+Each chunk is converted into vector embeddings using Google Gemini embedding model.
+
+FAISS vector database is used to store and search these embeddings efficiently.
+
+When the user asks a question, the retriever finds the most relevant chunks from vector store.
+
+The Large Language Model generates final answer based on retrieved context.
+
+Streamlit is used to create conversational user interface.
+
+FastAPI is used to expose the system as an API service.
+
+This system works completely offline without manual searching of documents.
+
+The advantage of this project is fast information retrieval from large documents.
+
+The limitation is that it answers only from provided documents, not from internet.
+
+Embedding is a numerical representation of text in vector form.
+
+Chunking improves retrieval accuracy and reduces token size.
+
+Retriever uses similarity search to find matching information.
+
+Prompt engineering guides the LLM to generate structured answers.
+
+Memory module helps the chatbot remember previous conversation.
+
+This project can be used in education, healthcare, and enterprise knowledge base.
+
+Vector database is better than normal database for semantic search.
+
+Gemini model is used as the Large Language Model in this project.
+
+LangChain framework connects all components like LLM, retriever, and memory.
+
+The final application is deployed on Streamlit Cloud.
+
+Users can upload their own documents and chat with them.
+
+This approach is called Retrieval Augmented Generation.
