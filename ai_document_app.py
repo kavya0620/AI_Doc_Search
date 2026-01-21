@@ -65,7 +65,7 @@ with st.sidebar:
                 # Import heavy libraries only when needed
                 from langchain_community.document_loaders import TextLoader, PyPDFLoader, UnstructuredPowerPointLoader
                 from langchain_text_splitters import RecursiveCharacterTextSplitter
-                from langchain_google_genai import GoogleGenerativeAIEmbeddings
+                from langchain_community.embeddings import HuggingFaceEmbeddings
                 from langchain_community.vectorstores import Chroma
 
                 all_docs = []
@@ -107,7 +107,7 @@ with st.sidebar:
                     splits = text_splitter.split_documents(all_docs)
 
                     # Create embeddings and vector store
-                    embeddings = GoogleGenerativeAIEmbeddings(model='models/embedding-001')
+                    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
                     st.session_state.vector_store = Chroma.from_documents(splits, embeddings)
 
                     st.session_state.documents_processed = True
