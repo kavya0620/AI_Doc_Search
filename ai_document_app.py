@@ -1,8 +1,8 @@
+
 import streamlit as st
 import os
 import tempfile
 import shutil
-from dotenv import load_dotenv
 
 from langchain_community.document_loaders import DirectoryLoader,TextLoader, PyPDFLoader
 from langchain_community.document_loaders import UnstructuredPowerPointLoader
@@ -17,9 +17,13 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableLambda
 
+API_KEY = st.secrets["GEMINI_API_KEY"]
 
-
-load_dotenv()
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    temperature=0.2,
+    api_key=API_KEY
+)
 
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
