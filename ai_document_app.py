@@ -1,209 +1,246 @@
-"""
-AI Document Copilot - A Streamlit app for chatting with your documents using RAG.
-
-This application allows users to upload documents (TXT, PDF, PPTX) and ask questions
-about their content using Google's Gemini AI model for natural language responses.
-"""
-
-# Standard library imports
+import streamlit as st
 import os
 import tempfile
-
-# Third-party imports
-import streamlit as st
+import shutil
 from dotenv import load_dotenv
 
-# Load environment variables
+from langchain_community.document_loaders import DirectoryLoader,TextLoader, PyPDFLoader
+from langchain_community.document_loaders import UnstructuredPowerPointLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
+
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnableLambda
+
+
+
 load_dotenv()
 
-# Configure the Streamlit page
-st.set_page_config(
-    page_title="AI Document Copilot",
-    page_icon="🤖",
-    layout="wide"
-)
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
 
-# App title and description
-st.title("🤖 AI Document Copilot")
-st.markdown("Upload your documents and chat with your AI assistant about their content!")
 
-# Initialize session state variables
-if 'vector_store' not in st.session_state:
+st.set_page_config(page_title="AI Document Search", page_icon=" ", layout="wide")
+
+# Custom CSS for professional styling
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5em;
+        font-weight: bold;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 20px;
+    }
+    .sub-header {
+        font-size: 1.5em;
+        font-weight: bold;
+        color: #2ca02c;
+        margin-top: 20px;
+        margin-bottom: 10px;
+    }
+    .chat-user {
+        background-color: #e6f7ff;
+        border-radius: 10px;
+        padding: 10px;
+        margin: 5px 0;
+    }
+    .chat-assistant {
+        background-color: #f0f0f0;
+        border-radius: 10px;
+        padding: 10px;
+        margin: 5px 0;
+    }
+    .sidebar-header {
+        font-size: 1.2em;
+        font-weight: bold;
+        color: #ff7f0e;
+    }
+    .success-msg {
+        color: #2ca02c;
+        font-weight: bold;
+    }
+    .error-msg {
+        color: #d62728;
+        font-weight: bold;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown('<div class="main-header"> AI Document Copilot</div>', unsafe_allow_html=True)
+st.markdown("Upload your documents and chat with them like a modern AI assistant!")
+
+st.divider()
+
+# ----------------- SESSION STATE -----------------
+if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
-if 'documents_processed' not in st.session_state:
+
+if "documents_processed" not in st.session_state:
     st.session_state.documents_processed = False
-if 'chat_history' not in st.session_state:
+
+if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
-if 'uploaded_files_list' not in st.session_state:
-    st.session_state.uploaded_files_list = []
 
-# Sidebar: Document Upload and Management
+if "memory" not in st.session_state:
+    st.session_state.memory = ChatMessageHistory()
+
+# ----------------- SIDEBAR: FILE UPLOAD AND PROCESSING -----------------
 with st.sidebar:
-    st.header("📁 Document Upload")
-
+    st.markdown('<div class="sidebar-header"> Document Upload</div>', unsafe_allow_html=True)
     uploaded_files = st.file_uploader(
         "Choose files to upload",
-        type=['txt', 'pdf', 'pptx'],
-        accept_multiple_files=True,
-        help="Upload text, PDF, or PowerPoint files"
+        type=["txt", "pdf"],
+        accept_multiple_files=True
     )
 
-    # Update uploaded files list
+    # Display uploaded files list as table
     if uploaded_files:
-        st.session_state.uploaded_files_list = [{"name": f.name, "size": f.size} for f in uploaded_files]
+        st.markdown('<div class="sub-header">📋 Uploaded Files</div>', unsafe_allow_html=True)
+        file_data = []
+        for file in uploaded_files:
+            size_kb = len(file.getvalue()) / 1024
+            file_data.append({"Name": file.name, "Size (KB)": f"{size_kb:.1f}"})
+        st.table(file_data)
 
-    # Display uploaded files
-    if st.session_state.uploaded_files_list:
-        st.subheader("Uploaded Files:")
-        for file_info in st.session_state.uploaded_files_list:
-            st.markdown(f"- **{file_info['name']}** ({file_info['size']} bytes)")
-
-    # Process button
-    if uploaded_files and not st.session_state.documents_processed:
+    # Process documents
+    if uploaded_files:
         if st.button("🚀 Process Documents"):
             with st.spinner("Processing documents..."):
-                # Import heavy libraries only when needed
-                from langchain_community.document_loaders import TextLoader, PyPDFLoader, UnstructuredPowerPointLoader
-                from langchain_text_splitters import RecursiveCharacterTextSplitter
-                from langchain_community.embeddings import HuggingFaceEmbeddings
-                from langchain_community.vectorstores import Chroma
-
-                all_docs = []
+                temp_dir = tempfile.mkdtemp()
 
                 for uploaded_file in uploaded_files:
-                    # Save uploaded file to temporary location
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
-                        tmp_file.write(uploaded_file.getvalue())
-                        tmp_path = tmp_file.name
+                    file_path = os.path.join(temp_dir, uploaded_file.name)
+                    with open(file_path, "wb") as f:
+                        f.write(uploaded_file.getvalue())
 
-                    try:
-                        # Load document based on file type
-                        if uploaded_file.name.endswith('.txt'):
-                            loader = TextLoader(tmp_path, encoding='utf-8')
-                        elif uploaded_file.name.endswith('.pdf'):
-                            loader = PyPDFLoader(tmp_path)
-                        elif uploaded_file.name.endswith('.pptx'):
-                            loader = UnstructuredPowerPointLoader(tmp_path)
-                        else:
-                            st.error(f"Unsupported file type: {uploaded_file.name}")
-                            continue
+                txt_docs = DirectoryLoader(
+                    temp_dir, glob="*.txt", loader_cls=TextLoader
+                ).load()
 
-                        docs = loader.load()
-                        all_docs.extend(docs)
+                pdf_docs = DirectoryLoader(
+                    temp_dir, glob="*.pdf", loader_cls=PyPDFLoader
+                ).load()
 
-                        # Clean up temporary file
-                        os.unlink(tmp_path)
-
-                    except Exception as e:
-                        st.error(f"Error processing {uploaded_file.name}: {str(e)}")
-                        continue
+                all_docs = txt_docs + pdf_docs
+                shutil.rmtree(temp_dir)
 
                 if all_docs:
-                    # Split text
-                    text_splitter = RecursiveCharacterTextSplitter(
+                    splitter = RecursiveCharacterTextSplitter(
                         chunk_size=1000,
-                        chunk_overlap=200
+                        chunk_overlap=100
                     )
-                    splits = text_splitter.split_documents(all_docs)
 
-                    # Create embeddings and vector store
-                    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-                    st.session_state.vector_store = Chroma.from_documents(splits, embeddings)
+                    splits = splitter.split_documents(all_docs)
+
+                    embeddings = HuggingFaceEmbeddings(
+                        model_name="all-MiniLM-L6-v2"
+                    )
+
+                    st.session_state.vector_store = Chroma.from_documents(
+                        splits, embeddings
+                    )
 
                     st.session_state.documents_processed = True
-                    st.success(f"✅ Successfully processed {len(all_docs)} documents into {len(splits)} chunks!")
+                    st.markdown(f'<div class="success-msg">✅ {len(splits)} chunks created successfully!</div>', unsafe_allow_html=True)
 
-    # Clear documents button
+    # Clear button
     if st.session_state.documents_processed:
         if st.button("🗑️ Clear Documents"):
+            # Clear vector store
             st.session_state.vector_store = None
+            # Reset flags
             st.session_state.documents_processed = False
+            # Clear chat history
             st.session_state.chat_history = []
-            st.session_state.uploaded_files_list = []
+            # Reset memory (important!)
+            st.session_state.memory = ChatMessageHistory()
+            # Force Streamlit to refresh everything
             st.rerun()
 
-# Main area: Chat Interface
+# ----------------- CHAT INTERFACE -----------------
+st.header("💬 Chat with Your Documents")
+
+# Display chat history
+for chat in st.session_state.chat_history:
+    with st.chat_message("user"):
+        st.markdown(chat['question'])
+    with st.chat_message("assistant"):
+        st.markdown(chat['answer'])
+        with st.expander("📄 Sources"):
+            for i, doc in enumerate(chat["sources"], 1):
+                st.markdown(f"**Source {i}:**")
+                st.markdown(doc.page_content[:500] + "...")
+                st.markdown("---")
+
+# Chat input at the bottom
 if st.session_state.documents_processed and st.session_state.vector_store:
-    # Display chat history
-    for message in st.session_state.chat_history:
-        with st.chat_message(message["role"]):
-            if message["role"] == "assistant":
-                st.markdown(message["content"])
-                if "chunks" in message:
-                    with st.expander("📄 Relevant Document Chunks"):
-                        for i, chunk in enumerate(message["chunks"], 1):
-                            st.markdown(f"**Chunk {i}:**")
-                            st.text(chunk[:500] + "..." if len(chunk) > 500 else chunk)
-                            st.markdown("---")
-            else:
-                st.markdown(message["content"])
+    if prompt := st.chat_input("Ask about your documents..."):
+        with st.spinner("Searching..."):
 
-    # Chat input
-    if query := st.chat_input("Ask about your documents..."):
-        # Add user message to history
-        st.session_state.chat_history.append({"role": "user", "content": query})
-        with st.chat_message("user"):
-            st.markdown(query)
+            # --------- LLM ---------
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-2.5-flash",
+                temperature=0.2
+            )
 
-        # Process query
-        with st.spinner("Thinking..."):
-            # Import heavy libraries only when needed
-            from langchain_core.output_parsers import StrOutputParser
-            from langchain_core.prompts import ChatPromptTemplate
-            from langchain_core.runnables import RunnablePassthrough
-            from langchain_community.llms import HuggingFacePipeline
-            from transformers import pipeline
+            # --------- RETRIEVER ---------
+            retriever = st.session_state.vector_store.as_retriever(
+                search_kwargs={"k": 3}
+            )
 
-            # Set up retriever
-            retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 3})
+            # --------- PROMPT ---------
+            prompt_template = ChatPromptTemplate.from_template(
+                """Answer the question using ONLY the context below.
+If the answer is not present in the context, say:
+"I could not find this information in the uploaded documents."
 
-            # Set up LLM (using local HuggingFace model)
-            pipe = pipeline("text-generation", model="microsoft/DialoGPT-medium")
-            llm = HuggingFacePipeline(pipeline=pipe)
-
-            # Create prompt template
-            template = """Answer the question based only on the following context:
-
+Context:
 {context}
 
-Question: {question}
+Question:
+{question}
 
-Answer:"""
-            prompt = ChatPromptTemplate.from_template(template)
+Answer:
+"""
+            )
 
-            # Create chain
-            def format_docs(docs):
-                return "\n\n".join(doc.page_content for doc in docs)
-
-            chain = (
-                {"context": retriever | format_docs, "question": RunnablePassthrough()}
-                | prompt
+            # --------- RAG CHAIN ---------
+            qa_chain = (
+                {
+                    "context": retriever | RunnableLambda(format_docs),
+                    "question": RunnablePassthrough()
+                }
+                | prompt_template
                 | llm
                 | StrOutputParser()
             )
 
-            # Get answer
-            answer = chain.invoke(query)
+            # --------- OPTION 3: SAFE GEMINI CALL ---------
+            try:
+                answer = qa_chain.invoke(prompt)
+            except Exception as e:
+                st.error(
+                    "🚫 Gemini API quota exceeded.\n\n"
+                    "Please wait 1 minute and try again."
+                )
+                st.stop()
 
-            # Get relevant chunks
-            docs = retriever.invoke(query)
-            chunks = [doc.page_content for doc in docs]
+            # --------- GET SOURCE DOCUMENTS ---------
+            docs = retriever.invoke(prompt)
 
-            # Add assistant message to history
-            st.session_state.chat_history.append({"role": "assistant", "content": answer, "chunks": chunks})
+            # --------- SAVE CHAT HISTORY ---------
+            st.session_state.chat_history.append({
+                "question": prompt,
+                "answer": answer,
+                "sources": docs
+            })
 
-        # Display assistant response
-        with st.chat_message("assistant"):
-            st.markdown(answer)
-            with st.expander("📄 Relevant Document Chunks"):
-                for i, chunk in enumerate(chunks, 1):
-                    st.markdown(f"**Chunk {i}:**")
-                    st.text(chunk[:500] + "..." if len(chunk) > 500 else chunk)
-                    st.markdown("---")
-
-else:
-    if not st.session_state.documents_processed:
-        st.info("👆 Please upload and process some documents in the sidebar to start chatting!")
-    else:
-        st.error("No documents processed. Please upload files again.")
+            # Rerun to display the new message
+            st.rerun()
 
