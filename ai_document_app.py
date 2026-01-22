@@ -17,6 +17,10 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableLambda
 
+if "GEMINI_API_KEY" not in st.secrets:
+    st.error("❌ GEMINI_API_KEY not found in Streamlit Secrets")
+    st.stop()
+
 API_KEY = st.secrets["GEMINI_API_KEY"]
 
 llm = ChatGoogleGenerativeAI(
