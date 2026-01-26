@@ -44,3 +44,27 @@ unstructured[local-inference]
 python-pptx
 openpyxl
 
+# Multi-Modal Document Intelligence
+pytesseract
+Pillow
+tabula-py
+PyMuPDF
+opencv-python
+
+# Advanced Vector Database
+rank-bm25
+
+# Enterprise Security
+cryptography
+PyJWT
+
+# Advanced Analytics
+networkx
+pandas
+matplotlib
+reportlab
+
+# Additional Utilities
+requests
+
+
