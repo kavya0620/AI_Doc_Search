@@ -49,7 +49,8 @@ pytesseract
 Pillow
 tabula-py
 PyMuPDF
-opencv-python
+opencv-python-headless
+
 
 # Advanced Vector Database
 rank-bm25
