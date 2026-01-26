@@ -16,7 +16,8 @@ from reportlab.lib.styles import getSampleStyleSheet
 import json
 import logging
 import pytesseract
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+if os.name == "nt":  # Windows only
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 from PIL import Image
 import tabula
 import fitz  # PyMuPDF
@@ -55,7 +56,8 @@ SECRET_KEY = os.getenv("SECRET_KEY", "default-secret-key")
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "default-encryption-key")
 OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID")
 OAUTH_CLIENT_SECRET = os.getenv("OAUTH_CLIENT_SECRET")
-LLM_MODEL = "gemini-2.5-flash"
+LLM_MODEL = "gemini-pro"
+
 LLM_TEMPERATURE = 0.2
 ANALYTICS_DB_PATH = "analytics.db"
 ROLES = {
@@ -224,39 +226,49 @@ class AnalyticsTracker:
 # Multi-Modal Processor Class
 class MultiModalProcessor:
     def __init__(self):
-        self.blip_processor = BlipProcessor.from_pretrained(BLIP_MODEL)
-        self.blip_model = BlipForConditionalGeneration.from_pretrained(BLIP_MODEL)
-        self.clip_processor = CLIPProcessor.from_pretrained(CLIP_MODEL)
-        self.clip_model = CLIPModel.from_pretrained(CLIP_MODEL)
+        # Do NOT load heavy models at startup
+        self.blip_processor = None
+        self.blip_model = None
+        self.clip_processor = None
+        self.clip_model = None
+
+    def _load_models(self):
+        # Load models only when actually needed
+        if self.blip_processor is None:
+            from transformers import (
+                BlipProcessor,
+                BlipForConditionalGeneration,
+                CLIPProcessor,
+                CLIPModel,
+            )
+            self.blip_processor = BlipProcessor.from_pretrained(BLIP_MODEL)
+            self.blip_model = BlipForConditionalGeneration.from_pretrained(BLIP_MODEL)
+            self.clip_processor = CLIPProcessor.from_pretrained(CLIP_MODEL)
+            self.clip_model = CLIPModel.from_pretrained(CLIP_MODEL)
 
     def extract_text_from_image(self, image_path):
         try:
             image = Image.open(image_path)
-            text = pytesseract.image_to_string(image, config=TESSERACT_CONFIG)
-            return text.strip()
+            return pytesseract.image_to_string(image, config=TESSERACT_CONFIG).strip()
         except Exception as e:
             logger.error(f"OCR failed for {image_path}: {e}")
             return ""
 
     def generate_image_caption(self, image_path):
         try:
+            self._load_models()  # 👈 models load here, not at startup
             image = Image.open(image_path)
             inputs = self.blip_processor(image, return_tensors="pt")
             out = self.blip_model.generate(**inputs)
-            caption = self.blip_processor.decode(out[0], skip_special_tokens=True)
-            return caption
+            return self.blip_processor.decode(out[0], skip_special_tokens=True)
         except Exception as e:
             logger.error(f"Image captioning failed for {image_path}: {e}")
             return "Image description unavailable"
 
     def extract_tables_from_pdf(self, pdf_path):
         try:
-            tables = tabula.read_pdf(pdf_path, pages='all', multiple_tables=True)
-            structured_tables = []
-            for table in tables:
-                table_text = table.to_string(index=False)
-                structured_tables.append(table_text)
-            return "\n\n".join(structured_tables)
+            tables = tabula.read_pdf(pdf_path, pages="all", multiple_tables=True)
+            return "\n\n".join(table.to_string(index=False) for table in tables)
         except Exception as e:
             logger.error(f"Table extraction failed for {pdf_path}: {e}")
             return ""
@@ -265,35 +277,34 @@ class MultiModalProcessor:
         try:
             doc = fitz.open(pdf_path)
             layout_info = []
+
             for page_num in range(len(doc)):
                 page = doc.load_page(page_num)
-                text_blocks = page.get_text("dict")["blocks"]
-                headers = []
-                footers = []
-                sections = []
-                columns = []
-                for block in text_blocks:
+                blocks = page.get_text("dict").get("blocks", [])
+
+                headers, footers, sections, columns = [], [], [], []
+
+                for block in blocks:
                     if "lines" in block:
-                        bbox = block["bbox"]
-                        y_pos = bbox[1]
-                        if y_pos < 100:
+                        x0, y0, x1, y1 = block["bbox"]
+
+                        if y0 < 100:
                             headers.append(block)
-                        elif y_pos > page.rect.height - 100:
+                        elif y1 > page.rect.height - 100:
                             footers.append(block)
                         else:
                             sections.append(block)
-                        x_pos = bbox[0]
-                        if x_pos < page.rect.width / 2:
-                            columns.append(("left", block))
-                        else:
-                            columns.append(("right", block))
+
+                        columns.append("left" if x0 < page.rect.width / 2 else "right")
+
                 layout_info.append({
                     "page": page_num + 1,
                     "headers": len(headers),
                     "footers": len(footers),
                     "sections": len(sections),
-                    "columns": len(set([col[0] for col in columns]))
+                    "columns": len(set(columns)),
                 })
+
             doc.close()
             return layout_info
         except Exception as e:
@@ -302,25 +313,34 @@ class MultiModalProcessor:
 
     def process_multi_modal_document(self, file_path, file_type):
         documents = []
-        if file_type in ['png', 'jpg', 'jpeg']:
+
+        if file_type in ["png", "jpg", "jpeg"]:
             ocr_text = self.extract_text_from_image(file_path)
             caption = self.generate_image_caption(file_path)
-            combined_content = f"OCR Text: {ocr_text}\n\nImage Caption: {caption}"
-            doc = Document(
-                page_content=combined_content,
-                metadata={"source": file_path, "type": "image", "page": 1}
+
+            documents.append(
+                Document(
+                    page_content=f"OCR Text: {ocr_text}\n\nImage Caption: {caption}",
+                    metadata={"source": file_path, "type": "image"},
+                )
             )
-            documents.append(doc)
-        elif file_type == 'pdf':
+
+        elif file_type == "pdf":
             ocr_text = self.extract_text_from_image(file_path)
             tables_text = self.extract_tables_from_pdf(file_path)
             layout_info = self.analyze_document_layout(file_path)
-            combined_content = f"OCR Text: {ocr_text}\n\nExtracted Tables: {tables_text}\n\nLayout Analysis: {layout_info}"
-            doc = Document(
-                page_content=combined_content,
-                metadata={"source": file_path, "type": "pdf", "layout": layout_info}
+
+            documents.append(
+                Document(
+                    page_content=(
+                        f"OCR Text: {ocr_text}\n\n"
+                        f"Extracted Tables:\n{tables_text}\n\n"
+                        f"Layout Analysis:\n{layout_info}"
+                    ),
+                    metadata={"source": file_path, "type": "pdf"},
+                )
             )
-            documents.append(doc)
+
         return documents
 
 # Advanced Vector Store Class
