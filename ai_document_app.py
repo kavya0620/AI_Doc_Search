@@ -1,4 +1,5 @@
 import streamlit as st
+st.success("App started")
 import os
 import jwt
 import hashlib
