@@ -19,6 +19,7 @@ from PIL import Image
 import tabula
 import fitz  # PyMuPDF
 import cv2
+
 from transformers import BlipProcessor, BlipForConditionalGeneration, CLIPProcessor, CLIPModel
 import torch
 from chromadb import PersistentClient
