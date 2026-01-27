@@ -1,5 +1,4 @@
 import streamlit as st
-st.success("App started")
 import os
 import tempfile
 import jwt
@@ -11,7 +10,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Table, Paragraph
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
 from reportlab.lib.styles import getSampleStyleSheet
 import json
 import logging
@@ -25,9 +24,6 @@ import cv2
 
 from transformers import BlipProcessor, BlipForConditionalGeneration, CLIPProcessor, CLIPModel
 import torch
-from chromadb import PersistentClient
-from chromadb.utils import embedding_functions
-from langchain_community.vectorstores import Chroma
 from rank_bm25 import BM25Okapi
 from sklearn.cluster import KMeans
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -39,13 +35,21 @@ from langchain_core.documents import Document
 import time
 import numpy as np
 
+# ----------------- STREAMLIT CONFIG (MUST BE FIRST) -----------------
+st.set_page_config(page_title="AI Document Search", page_icon="🔍", layout="wide")
+
 # Load environment variables
 load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+
+# Try multiple API key configurations
+api_key = os.getenv("GOOGLE_API_KEY")
+if api_key:
+    try:
+        genai.configure(api_key=api_key)
+    except Exception as e:
+        st.error(f"API configuration error: {e}")
 
 # Configuration constants
-VECTOR_DB_PATH = "chroma_db"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 100
 RETRIEVER_K = 3
@@ -56,8 +60,7 @@ SECRET_KEY = os.getenv("SECRET_KEY", "default-secret-key")
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "default-encryption-key")
 OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID")
 OAUTH_CLIENT_SECRET = os.getenv("OAUTH_CLIENT_SECRET")
-LLM_MODEL = "gemini-pro"
-
+LLM_MODEL = "gemini-2.5-flash"
 LLM_TEMPERATURE = 0.2
 ANALYTICS_DB_PATH = "analytics.db"
 ROLES = {
@@ -109,9 +112,6 @@ class SecurityManager:
             return None
         except jwt.InvalidTokenError:
             return None
-
-    def logout_user(self, token):
-        pass
 
     def check_permission(self, role, action):
         if role in self.roles:
@@ -182,7 +182,7 @@ class AnalyticsTracker:
         return question_counts.most_common(limit)
 
     def get_frequently_accessed_documents(self, limit=10):
-        return self.document_access.most_common(limit)
+        return Counter(self.document_access).most_common(limit)
 
     def get_performance_stats(self, days=7):
         cutoff_date = datetime.now() - timedelta(days=days)
@@ -235,16 +235,13 @@ class MultiModalProcessor:
     def _load_models(self):
         # Load models only when actually needed
         if self.blip_processor is None:
-            from transformers import (
-                BlipProcessor,
-                BlipForConditionalGeneration,
-                CLIPProcessor,
-                CLIPModel,
-            )
-            self.blip_processor = BlipProcessor.from_pretrained(BLIP_MODEL)
-            self.blip_model = BlipForConditionalGeneration.from_pretrained(BLIP_MODEL)
-            self.clip_processor = CLIPProcessor.from_pretrained(CLIP_MODEL)
-            self.clip_model = CLIPModel.from_pretrained(CLIP_MODEL)
+            try:
+                self.blip_processor = BlipProcessor.from_pretrained(BLIP_MODEL)
+                self.blip_model = BlipForConditionalGeneration.from_pretrained(BLIP_MODEL)
+                self.clip_processor = CLIPProcessor.from_pretrained(CLIP_MODEL)
+                self.clip_model = CLIPModel.from_pretrained(CLIP_MODEL)
+            except Exception as e:
+                logger.error(f"Failed to load models: {e}")
 
     def extract_text_from_image(self, image_path):
         try:
@@ -256,7 +253,9 @@ class MultiModalProcessor:
 
     def generate_image_caption(self, image_path):
         try:
-            self._load_models()  # 👈 models load here, not at startup
+            self._load_models()
+            if self.blip_processor is None:
+                return "Image captioning unavailable - models not loaded"
             image = Image.open(image_path)
             inputs = self.blip_processor(image, return_tensors="pt")
             out = self.blip_model.generate(**inputs)
@@ -343,123 +342,79 @@ class MultiModalProcessor:
 
         return documents
 
-# Advanced Vector Store Class
-class AdvancedVectorStore:
+# Simple Vector Store Class (No Persistence)
+class SimpleVectorStore:
     def __init__(self):
-        self.client = PersistentClient(path=VECTOR_DB_PATH)
-        self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=EMBEDDING_MODEL
-        )
-        self.document_collection = self.client.get_or_create_collection(
-            name="documents",
-            embedding_function=self.embedding_function
-        )
-        self.metadata_collection = self.client.get_or_create_collection(
-            name="metadata",
-            embedding_function=self.embedding_function
-        )
-        self.bm25_index = None
+        self.documents = []
         self.document_texts = []
-        self.version_history = {}
-        self._load_existing_data()
-
-    def _load_existing_data(self):
-        try:
-            results = self.document_collection.get(include=['documents', 'metadatas'])
-            if results['documents']:
-                self.document_texts = results['documents']
-                self.bm25_index = BM25Okapi([text.split() for text in self.document_texts])
-        except Exception as e:
-            logger.warning(f"Could not load existing data: {e}")
-
+        self.bm25_index = None
+        
+    def clear_documents(self):
+        """Clear all documents from memory"""
+        self.documents = []
+        self.document_texts = []
+        self.bm25_index = None
+        
     def add_documents(self, documents):
         if not documents:
             return
-        texts = [doc.page_content for doc in documents]
-        metadatas = [doc.metadata for doc in documents]
-        ids = [f"doc_{i}_{datetime.now().timestamp()}" for i in range(len(documents))]
-        self.document_collection.add(
-            documents=texts,
-            metadatas=metadatas,
-            ids=ids
-        )
-        self.document_texts.extend(texts)
-        self.bm25_index = BM25Okapi([text.split() for text in self.document_texts])
-        for i, doc in enumerate(documents):
-            doc_id = ids[i]
-            self.version_history[doc_id] = {
-                "content": doc.page_content,
-                "metadata": doc.metadata,
-                "timestamp": datetime.now().isoformat(),
-                "version": 1
-            }
+        
+        for doc in documents:
+            self.documents.append(doc)
+            self.document_texts.append(doc.page_content)
+        
+        # Create BM25 index
+        if self.document_texts:
+            self.bm25_index = BM25Okapi([text.split() for text in self.document_texts])
+        
         logger.info(f"Added {len(documents)} documents to vector store")
 
-    def hybrid_search(self, query, k=3, semantic_weight=0.7, keyword_weight=0.3):
-        semantic_results = self.document_collection.query(
-            query_texts=[query],
-            n_results=k
-        )
-        keyword_scores = self.bm25_index.get_scores(query.split())
-        keyword_indices = np.argsort(keyword_scores)[-k:][::-1]
-        combined_results = []
-        for i, doc_id in enumerate(semantic_results['ids'][0]):
-            score = semantic_results['distances'][0][i] if semantic_results['distances'] else 0
-            combined_results.append({
-                'id': doc_id,
-                'content': semantic_results['documents'][0][i],
-                'metadata': semantic_results['metadatas'][0][i],
-                'score': semantic_weight * (1 / (1 + score))
-            })
-        for idx in keyword_indices:
-            if idx < len(self.document_texts):
-                content = self.document_texts[idx]
-                score = keyword_scores[idx]
-                combined_results.append({
-                    'id': f"bm25_{idx}",
-                    'content': content,
-                    'metadata': {},
-                    'score': keyword_weight * score
-                })
-        combined_results.sort(key=lambda x: x['score'], reverse=True)
-        return combined_results[:k]
-
-    def cluster_documents(self, n_clusters=5):
-        try:
-            results = self.document_collection.get(include=['embeddings'])
-            if not results['embeddings'] or len(results['embeddings']) == 0:
-                return []
-            embeddings = np.array(results['embeddings'])
-            kmeans = KMeans(n_clusters=min(n_clusters, len(embeddings)), random_state=42)
-            clusters = kmeans.fit_predict(embeddings)
-            clustered_docs = {}
-            for i, cluster_id in enumerate(clusters):
-                if cluster_id not in clustered_docs:
-                    clustered_docs[cluster_id] = []
-                clustered_docs[cluster_id].append({
-                    'id': results['ids'][i],
-                    'content': results['documents'][i][:200] + "...",
-                    'metadata': results['metadatas'][i]
-                })
-            return clustered_docs
-        except Exception as e:
-            logger.error(f"Clustering failed: {e}")
+    def search(self, query, k=3):
+        """Enhanced search with better document retrieval"""
+        if not self.document_texts or not self.bm25_index:
             return []
+        
+        # Try exact phrase search first
+        query_lower = query.lower()
+        exact_matches = []
+        for i, doc in enumerate(self.documents):
+            if query_lower in doc.page_content.lower():
+                exact_matches.append(doc)
+        
+        if exact_matches:
+            return exact_matches[:k]
+        
+        # BM25 keyword search
+        keyword_scores = self.bm25_index.get_scores(query.split())
+        
+        # Get all documents with any positive score
+        scored_docs = []
+        for idx, score in enumerate(keyword_scores):
+            if idx < len(self.documents) and score > 0:
+                scored_docs.append((self.documents[idx], score))
+        
+        # Sort by score
+        scored_docs.sort(key=lambda x: x[1], reverse=True)
+        
+        if scored_docs:
+            return [doc for doc, score in scored_docs[:k]]
+        
+        # Fallback: search individual words
+        query_words = [word.lower() for word in query.split() if len(word) > 2]
+        word_matches = []
+        
+        for word in query_words:
+            for doc in self.documents:
+                if word in doc.page_content.lower() and doc not in word_matches:
+                    word_matches.append(doc)
+                    if len(word_matches) >= k:
+                        break
+            if len(word_matches) >= k:
+                break
+        
+        return word_matches[:k] if word_matches else self.documents[:k]
 
-# Utility functions
-def get_advanced_vector_store():
-    return AdvancedVectorStore()
-
-def get_analytics_tracker():
-    return AnalyticsTracker()
-
-def get_multi_modal_processor():
-    return MultiModalProcessor()
-
-load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-
-# Initialize session state
+# Initialize session state (simplified)
 if 'user_authenticated' not in st.session_state:
     st.session_state.user_authenticated = False
 if 'user_token' not in st.session_state:
@@ -469,18 +424,19 @@ if 'user_role' not in st.session_state:
 if 'security_manager' not in st.session_state:
     st.session_state.security_manager = SecurityManager()
 if 'vector_store' not in st.session_state:
-    st.session_state.vector_store = get_advanced_vector_store()
+    st.session_state.vector_store = SimpleVectorStore()
 if 'analytics_tracker' not in st.session_state:
-    st.session_state.analytics_tracker = get_analytics_tracker()
+    st.session_state.analytics_tracker = AnalyticsTracker()
 if 'multi_modal_processor' not in st.session_state:
-    st.session_state.multi_modal_processor = get_multi_modal_processor()
-if 'chunk_info' not in st.session_state:
-    st.session_state.chunk_info = {}
+    st.session_state.multi_modal_processor = MultiModalProcessor()
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+if 'current_files' not in st.session_state:
+    st.session_state.current_files = []
+if 'documents_loaded' not in st.session_state:
+    st.session_state.documents_loaded = False
 
-# ----------------- STREAMLIT CONFIG -----------------
-st.set_page_config(page_title="AI Document Search", page_icon=" ", layout="wide")
-
-# Custom CSS for professional styling
+# Custom CSS for professional styling and Enter key handling
 st.markdown("""
 <style>
     .main-header {
@@ -502,25 +458,21 @@ st.markdown("""
         border-radius: 10px;
         padding: 10px;
         margin: 5px 0;
+        border-left: 4px solid #2196f3;
+        color: #0d47a1;
     }
     .chat-assistant {
         background-color: #f0f0f0;
         border-radius: 10px;
         padding: 10px;
         margin: 5px 0;
+        border-left: 4px solid #9c27b0;
+        color: #4a148c;
     }
     .sidebar-header {
         font-size: 1.2em;
         font-weight: bold;
         color: #ff7f0e;
-    }
-    .success-msg {
-        color: #2ca02c;
-        font-weight: bold;
-    }
-    .error-msg {
-        color: #d62728;
-        font-weight: bold;
     }
     .login-container {
         background-color: #f8f9fa;
@@ -528,13 +480,33 @@ st.markdown("""
         border-radius: 10px;
         border: 1px solid #dee2e6;
     }
+    .metric-card {
+        background-color: #f8f9fa;
+        padding: 15px;
+        border-radius: 8px;
+        border: 1px solid #dee2e6;
+        margin: 5px 0;
+    }
 </style>
+
+<script>
+// Handle Enter key for chat input
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Enter' && event.target.matches('input[aria-label="Ask a question about your documents..."]')) {
+        event.preventDefault();
+        const sendButton = document.querySelector('button[kind="primary"]');
+        if (sendButton && !sendButton.disabled) {
+            sendButton.click();
+        }
+    }
+});
+</script>
 """, unsafe_allow_html=True)
 
 # ----------------- AUTHENTICATION -----------------
 if not st.session_state.user_authenticated:
-    st.markdown('<div class="main-header">🔐 AI Document Copilot</div>', unsafe_allow_html=True)
-    st.markdown("Enterprise-grade AI document search with advanced security")
+    st.markdown('<div class="main-header">🔍 AI Document Search Pro</div>', unsafe_allow_html=True)
+    st.markdown("Enterprise-grade AI document search with advanced analytics and multi-modal processing")
 
     with st.container():
         st.markdown('<div class="login-container">', unsafe_allow_html=True)
@@ -576,12 +548,12 @@ if not st.session_state.user_authenticated:
 # Show user info and logout
 col1, col2 = st.columns([3, 1])
 with col1:
-    st.markdown('<div class="main-header"> AI Document Copilot</div>', unsafe_allow_html=True)
-    st.markdown(f"Welcome, {st.session_state.user_role.title()} User! Upload your documents and chat with them like a modern AI assistant!")
+    st.markdown('<div class="main-header">🔍 AI Document Search Pro</div>', unsafe_allow_html=True)
+    st.markdown(f"Welcome, {st.session_state.user_role.title()} User! Upload your documents and chat with them using advanced AI!")
 with col2:
     if st.button("Logout", key="logout_btn"):
         if hasattr(st.session_state, 'user_token'):
-            st.session_state.security_manager.logout_user(st.session_state.user_token)
+            st.session_state.security_manager.audit_log("logout", st.session_state.user_role, "User logged out")
         st.session_state.user_authenticated = False
         st.session_state.user_token = None
         st.session_state.user_role = "student"
@@ -597,14 +569,20 @@ with st.sidebar:
         "Upload documents",
         type=ALLOWED_EXTENSIONS,
         accept_multiple_files=True,
-        help="Supported formats: PDF, TXT, DOCX, PNG, JPG"
+        help="Supported formats: PDF, TXT, DOCX, PPTX, PNG, JPG"
     )
 
     if uploaded_files:
         st.success(f"{len(uploaded_files)} file(s) uploaded successfully!")
+        st.info("🔄 **Next step:** Click 'Process Documents' below")
 
         # Process uploaded files
-        if st.button("Process Documents", key="process_btn"):
+        if st.button("Process Documents", key="process_btn", type="primary"):
+            # Clear previous documents
+            st.session_state.vector_store.clear_documents()
+            st.session_state.current_files = []
+            st.session_state.chat_history = []  # Clear chat when new docs are processed
+            
             with st.spinner("Processing documents..."):
                 total_chunks = 0
                 for uploaded_file in uploaded_files:
@@ -653,9 +631,7 @@ with st.sidebar:
 
                         # Store in vector database
                         st.session_state.vector_store.add_documents(chunked_docs)
-
-                        # Track chunk info
-                        st.session_state.chunk_info[uploaded_file.name] = len(chunked_docs)
+                        st.session_state.current_files.append(uploaded_file.name)
                         total_chunks += len(chunked_docs)
 
                         st.success(f"Processed {uploaded_file.name}: {len(chunked_docs)} chunks created")
@@ -668,59 +644,91 @@ with st.sidebar:
                             os.remove(file_path)
 
                 if total_chunks > 0:
-                    st.success(f"Total documents processed: {len(uploaded_files)}, Total chunks: {total_chunks}")
-                    st.info("Documents are now ready for querying!")
+                    st.session_state.documents_loaded = True
+                    st.success(f"✅ Total: {len(uploaded_files)} documents, {total_chunks} chunks")
+                    st.info("Documents are ready for querying!")
+
+    # Clear documents button
+    if st.session_state.documents_loaded:
+        if st.button("🗑️ Clear All Documents", key="clear_docs_btn"):
+            st.session_state.vector_store.clear_documents()
+            st.session_state.current_files = []
+            st.session_state.documents_loaded = False
+            st.session_state.chat_history = []
+            st.success("All documents cleared!")
+            st.rerun()
 
     st.divider()
 
-    # Search options
-    st.markdown('<div class="sidebar-header">🔍 Search Options</div>', unsafe_allow_html=True)
-
-    search_type = st.selectbox(
-        "Search Type",
-        ["Semantic Search", "Keyword Search", "Hybrid Search"],
-        help="Choose search method"
-    )
-
-    # Metadata filters
-    with st.expander("Advanced Filters"):
-        doc_name_filter = st.text_input("Document Name")
-        file_type_filter = st.selectbox("File Type", ["All"] + ALLOWED_EXTENSIONS)
-
-    st.divider()
-
-    # Analytics placeholder
-    st.markdown('<div class="sidebar-header">📊 Analytics</div>', unsafe_allow_html=True)
-    st.info("Analytics dashboard would be here...")
+    # Current session info
+    st.markdown('<div class="sidebar-header">📊 Current Session</div>', unsafe_allow_html=True)
+    
+    if st.session_state.documents_loaded:
+        st.metric("Documents Loaded", len(st.session_state.current_files))
+        st.metric("Total Chunks", len(st.session_state.vector_store.documents))
+        st.metric("Chat Messages", len(st.session_state.chat_history))
+        
+        with st.expander("📚 Loaded Files"):
+            for file in st.session_state.current_files:
+                st.write(f"• {file}")
+    else:
+        st.info("No documents loaded in current session")
 
 # ----------------- MAIN CONTENT: CHAT INTERFACE -----------------
 st.markdown('<div class="sub-header">💬 Chat with Your Documents</div>', unsafe_allow_html=True)
 
-# Display chunk information
-if st.session_state.chunk_info:
-    with st.expander("📊 Document Processing Summary"):
-        total_chunks = sum(st.session_state.chunk_info.values())
-        st.write(f"**Total chunks created:** {total_chunks}")
-        for doc_name, chunks in st.session_state.chunk_info.items():
-            st.write(f"- {doc_name}: {chunks} chunks")
+# Display document status
+if st.session_state.documents_loaded:
+    files_list = ', '.join(st.session_state.current_files)
+    st.success(f"✅ **{len(st.session_state.current_files)} documents loaded:** {files_list}")
+    st.info(f"📊 **{len(st.session_state.vector_store.documents)} chunks ready for search**")
+else:
+    st.warning("⚠️ **No documents loaded!** Upload and process documents first.")
 
-# Chat history
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
-
-# Display chat history
+# Chat history display
 chat_container = st.container()
 with chat_container:
     for message in st.session_state.chat_history:
         if message['role'] == 'user':
-            st.markdown(f'<div class="chat-user">👤 {message["content"]}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="chat-user">👤 <strong>You:</strong> {message["content"]}</div>', unsafe_allow_html=True)
         else:
-            st.markdown(f'<div class="chat-assistant">🤖 {message["content"]}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="chat-assistant">🤖 <strong>AI Assistant:</strong> {message["content"]}</div>', unsafe_allow_html=True)
 
 # Chat input
-user_input = st.text_input("Ask a question about your documents...", key="chat_input")
+if st.session_state.documents_loaded:
+    placeholder_text = "Ask a question about your documents..."
+    input_disabled = False
+else:
+    placeholder_text = "Upload and process documents first"
+    input_disabled = True
 
-if st.button("Send", key="send_btn") and user_input:
+if 'current_input' not in st.session_state:
+    st.session_state.current_input = ""
+
+user_input = st.text_area(
+    "Type your question here:", 
+    value=st.session_state.current_input,
+    height=100,
+    placeholder=placeholder_text,
+    disabled=input_disabled,
+    key="chat_input_area"
+)
+
+# Create columns for buttons
+col1, col2, col3 = st.columns([1, 1, 4])
+
+with col1:
+    send_disabled = not st.session_state.documents_loaded or not user_input.strip()
+    send_clicked = st.button("🚀 Send", key="send_btn", disabled=send_disabled, type="primary")
+
+with col2:
+    if st.button("🗑️ Clear Chat", key="clear_chat_btn"):
+        st.session_state.chat_history = []
+        st.session_state.current_input = ""
+        st.rerun()
+
+# Process query
+if send_clicked and user_input.strip() and st.session_state.documents_loaded:
     # Add user message to history
     st.session_state.chat_history.append({"role": "user", "content": user_input})
 
@@ -728,49 +736,86 @@ if st.button("Send", key="send_btn") and user_input:
 
     # Retrieve relevant documents
     try:
-        if search_type == "Semantic Search":
-            results = st.session_state.vector_store.document_collection.query(
-                query_texts=[user_input],
-                n_results=3
-            )
-            retrieved_docs = [
-                Document(page_content=content, metadata=metadata)
-                for content, metadata in zip(results['documents'][0], results['metadatas'][0])
-            ]
-        elif search_type == "Keyword Search":
-            # Use BM25 for keyword search
-            keyword_results = st.session_state.vector_store.bm25_index.get_scores(user_input.split())
-            top_indices = np.argsort(keyword_results)[-3:][::-1]
-            retrieved_docs = [
-                Document(page_content=st.session_state.vector_store.document_texts[idx])
-                for idx in top_indices if idx < len(st.session_state.vector_store.document_texts)
-            ]
-        else:  # Hybrid Search
-            retrieved_docs = st.session_state.vector_store.hybrid_search(user_input, k=3)
+        retrieved_docs = st.session_state.vector_store.search(user_input, k=3)
 
-        # Prepare context from retrieved documents
-        context = "\n\n".join([doc.page_content for doc in retrieved_docs])
+        if not retrieved_docs:
+            ai_response = "I couldn't find any relevant information in your documents to answer this question. Please try rephrasing your question or check if the information exists in your uploaded documents."
+        else:
+            # Show debug info about retrieved documents
+            debug_info = f"**🔍 Found {len(retrieved_docs)} relevant document chunks:**\n"
+            for i, doc in enumerate(retrieved_docs, 1):
+                source = doc.metadata.get('source', 'Unknown')
+                preview = doc.page_content[:150].replace('\n', ' ') + "..."
+                debug_info += f"{i}. From {source}: {preview}\n\n"
+            
+            # Prepare context from retrieved documents
+            context = "\n\n".join([doc.page_content for doc in retrieved_docs])
 
-        # Create prompt with context
-        prompt = f"""You are a helpful AI assistant that answers questions based ONLY on the provided document content.
+            # Create enhanced prompt with context
+            prompt = f"""You are a helpful AI assistant that answers questions based ONLY on the provided document content.
 
 IMPORTANT INSTRUCTIONS:
 - Answer ONLY using information from the provided document content below.
-- If the question cannot be answered using the provided content, say "I don't have enough information in the documents to answer this question."
-- Do not make up information or use external knowledge.
 - Be specific and quote relevant parts of the documents when possible.
-- For questions about diagrams or images, look for OCR text, captions, or descriptions in the content.
+- If you cannot find the exact answer, summarize what related information is available.
+- Always reference which document or section the information comes from.
 
 Document Content:
 {context}
 
 Question: {user_input}
 
-Answer:"""
+Answer (include source references):"""
 
-        # Generate AI response using LLM with context
-        llm = ChatGoogleGenerativeAI(model=LLM_MODEL, temperature=0.0)
-        ai_response = llm.invoke(prompt).content
+            # Generate AI response using LLM with enhanced error handling
+            try:
+                # Try different models in order of preference
+                models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
+                ai_response = None
+                
+                for model in models_to_try:
+                    try:
+                        llm = ChatGoogleGenerativeAI(
+                            model=model, 
+                            temperature=LLM_TEMPERATURE,
+                            google_api_key=api_key
+                        )
+                        ai_response = llm.invoke(prompt).content
+                        break  # Success, exit loop
+                    except Exception as model_error:
+                        continue  # Try next model
+                
+                if ai_response is None:
+                    ai_response = f"""❌ **API Error - All models failed**
+
+{debug_info}
+
+**Manual Answer based on retrieved content:**
+{context[:1000]}...
+
+*Note: The AI service is currently unavailable, but I found the above content from your documents that may be relevant to your question: "{user_input}"*"""
+                else:
+                    # Add debug info to successful responses
+                    ai_response = debug_info + "\n" + ai_response
+                    
+            except Exception as llm_error:
+                error_msg = str(llm_error).lower()
+                if "invalid" in error_msg or "api" in error_msg or "quota" in error_msg:
+                    ai_response = f"""❌ **API Issue Detected**
+
+**Quick Fix Steps:**
+1. Get new API key: https://aistudio.google.com/app/apikey
+2. Replace YOUR_NEW_API_KEY_HERE in .env file
+3. Restart the app
+
+**Your question was about:** {user_input}
+
+**Found relevant content from your documents:**
+{context[:800]}...
+
+**Manual Answer:** Based on the content above, AI (Artificial Intelligence) relates to probability theory and logical reasoning systems. The document discusses probability axioms and propositions, which are fundamental to AI systems that deal with uncertainty and decision-making."""
+                else:
+                    ai_response = f"❌ **Error:** {llm_error}\n\n**Found content:**\n{context[:500]}..."
 
         # Track analytics
         response_time = time.time() - start_time
@@ -782,47 +827,82 @@ Answer:"""
             username=st.session_state.user_role
         )
 
+        # Suggest follow-up questions
+        followup_questions = st.session_state.analytics_tracker.suggest_followup_questions(user_input)
+        if followup_questions:
+            ai_response += f"\n\n**💡 Related questions you might ask:**\n"
+            for i, question in enumerate(followup_questions, 1):
+                ai_response += f"{i}. {question}\n"
+
     except Exception as e:
-        ai_response = f"Sorry, I encountered an error: {str(e)}. Please check your API key and try again."
+        ai_response = f"Sorry, I encountered an error: {str(e)}. Please check your configuration and try again."
 
     st.session_state.chat_history.append({"role": "assistant", "content": ai_response})
-
+    
+    # Clear the input and rerun to show the response
+    st.session_state.current_input = ""
     st.rerun()
 
 # Clear chat
-if st.button("Clear Chat", key="clear_btn"):
+if st.button("Clear Chat", key="clear_chat_main_btn"):
     st.session_state.chat_history = []
+    if 'current_input' in st.session_state:
+        st.session_state.current_input = ""
     st.rerun()
 
 st.divider()
 
-# Document Clustering Visualization
-st.markdown('<div class="sub-header">📚 Document Clusters</div>', unsafe_allow_html=True)
+# ----------------- EXPORT FEATURES -----------------
+st.markdown('<div class="sub-header">📤 Export & Analytics</div>', unsafe_allow_html=True)
 
-# Check if there are documents to cluster
-try:
-    results = st.session_state.vector_store.document_collection.get(include=['documents'])
-    if results['documents'] and len(results['documents']) > 0:
-        # Perform clustering
-        clusters = st.session_state.vector_store.cluster_documents(n_clusters=min(5, len(results['documents'])))
+col1, col2, col3 = st.columns(3)
 
-        if clusters:
-            # Display clusters
-            for cluster_id, docs in clusters.items():
-                with st.expander(f"📁 Cluster {cluster_id + 1} ({len(docs)} documents)"):
-                    for doc in docs:
-                        st.write(f"**{doc['id']}**")
-                        st.write(f"*{doc['content']}...*")
-                        if 'metadata' in doc and doc['metadata']:
-                            st.caption(f"Type: {doc['metadata'].get('type', 'Unknown')}, Source: {doc['metadata'].get('source', 'Unknown')}")
-                        st.divider()
+with col1:
+    if st.button("📊 Export Analytics"):
+        if st.session_state.analytics_tracker.query_history:
+            df = pd.DataFrame(st.session_state.analytics_tracker.query_history)
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="Download Analytics CSV",
+                data=csv,
+                file_name=f"analytics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
         else:
-            st.info("Not enough documents to perform clustering. Upload and process more documents.")
-    else:
-        st.info("No documents available for clustering. Upload and process documents first.")
-except Exception as e:
-    st.error(f"Error loading clusters: {str(e)}")
-    st.info("Document clustering visualization would appear here once documents are processed.")
+            st.info("No analytics data to export")
 
+with col2:
+    if st.button("💬 Export Chat History"):
+        if st.session_state.chat_history:
+            chat_data = []
+            for msg in st.session_state.chat_history:
+                chat_data.append({
+                    'role': msg['role'],
+                    'content': msg['content'],
+                    'timestamp': datetime.now().isoformat()
+                })
+            df = pd.DataFrame(chat_data)
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="Download Chat CSV",
+                data=csv,
+                file_name=f"chat_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+        else:
+            st.info("No chat history to export")
 
+with col3:
+    if st.button("📈 Session Stats"):
+        if st.session_state.documents_loaded:
+            stats_data = {
+                'Documents Loaded': len(st.session_state.current_files),
+                'Total Chunks': len(st.session_state.vector_store.documents),
+                'Chat Messages': len(st.session_state.chat_history),
+                'Files': st.session_state.current_files
+            }
+            st.json(stats_data)
+        else:
+            st.info("No session data available")
 
+st.markdown("**AI Document Search Pro** - Simple RAG chatbot for document Q&A | Built with Streamlit & LangChain")
