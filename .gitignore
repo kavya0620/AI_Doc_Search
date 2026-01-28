@@ -56,4 +56,4 @@ app_data.json
 Thumbs.db
 
 # ChromaDB
-chroma_db/
+chroma_db/.env 

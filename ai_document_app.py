@@ -436,56 +436,275 @@ if 'current_files' not in st.session_state:
 if 'documents_loaded' not in st.session_state:
     st.session_state.documents_loaded = False
 
-# Custom CSS for professional styling and Enter key handling
+# Custom CSS for vibrant, premium AI dashboard styling
 st.markdown("""
 <style>
+    /* Vibrant gradient background with flowing waves and abstract shapes */
+    .stApp {
+        background:
+            radial-gradient(circle at 20% 80%, rgba(255, 215, 0, 0.15) 0%, transparent 50%),
+            radial-gradient(circle at 80% 20%, rgba(255, 0, 255, 0.1) 0%, transparent 50%),
+            radial-gradient(circle at 40% 40%, rgba(0, 255, 255, 0.12) 0%, transparent 50%),
+            linear-gradient(135deg,
+                #1e3a8a 0%,    /* Royal Blue */
+                #06b6d4 20%,   /* Cyan */
+                #7c3aed 40%,   /* Purple */
+                #ec4899 60%,   /* Magenta */
+                #14b8a6 80%,   /* Teal */
+                #1e3a8a 100%   /* Royal Blue */
+            );
+        background-attachment: fixed;
+        min-height: 100vh;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        position: relative;
+        overflow-x: hidden;
+    }
+
+    /* Animated flowing waves */
+    .stApp::before {
+        content: '';
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background:
+            linear-gradient(45deg, rgba(255, 215, 0, 0.08) 0%, transparent 30%, rgba(0, 255, 255, 0.06) 70%, transparent 100%),
+            linear-gradient(-45deg, rgba(255, 0, 255, 0.07) 0%, transparent 40%, rgba(0, 255, 255, 0.05) 80%, transparent 100%);
+        background-size: 400% 400%;
+        animation: flow 20s ease-in-out infinite;
+        pointer-events: none;
+        z-index: -1;
+    }
+
+    /* Light flares and abstract shapes */
+    .stApp::after {
+        content: '';
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background:
+            radial-gradient(ellipse at 10% 90%, rgba(255, 215, 0, 0.2) 0%, transparent 40%),
+            radial-gradient(ellipse at 90% 10%, rgba(255, 0, 255, 0.15) 0%, transparent 35%),
+            radial-gradient(ellipse at 50% 50%, rgba(0, 255, 255, 0.1) 0%, transparent 45%);
+        pointer-events: none;
+        z-index: -1;
+    }
+
+    @keyframes flow {
+        0%, 100% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+    }
+
+    /* Premium main header with gradient text */
     .main-header {
-        font-size: 2.5em;
-        font-weight: bold;
-        color: #1f77b4;
+        font-size: 2.8em;
+        font-weight: 700;
+        background: linear-gradient(45deg, #ffd700, #ffffff, #00ffff, #ff00ff);
+        background-size: 400% 400%;
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        animation: gradientShift 3s ease-in-out infinite;
         text-align: center;
         margin-bottom: 20px;
+        line-height: 1.1;
+        text-shadow: 0 0 30px rgba(255, 215, 0, 0.5);
+        position: relative;
+        z-index: 10;
     }
+
+    @keyframes gradientShift {
+        0%, 100% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+    }
+
+    /* Dynamic sub-header */
     .sub-header {
-        font-size: 1.5em;
-        font-weight: bold;
-        color: #2ca02c;
-        margin-top: 20px;
-        margin-bottom: 10px;
+        font-size: 1.6em;
+        font-weight: 600;
+        background: linear-gradient(45deg, #ffffff, #00ffff, #ffd700);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-top: 30px;
+        margin-bottom: 20px;
+        border-bottom: 3px solid;
+        border-image: linear-gradient(90deg, #ffd700, #00ffff, #ff00ff) 1;
+        padding-bottom: 12px;
+        position: relative;
+        z-index: 10;
     }
+
+    /* Vibrant chat messages with glassmorphism */
     .chat-user {
-        background-color: #e6f7ff;
-        border-radius: 10px;
-        padding: 10px;
-        margin: 5px 0;
-        border-left: 4px solid #2196f3;
-        color: #0d47a1;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(173, 216, 230, 0.8));
+        backdrop-filter: blur(20px);
+        border-radius: 15px;
+        padding: 18px 22px;
+        margin: 10px 0;
+        border-left: 4px solid #00ffff;
+        color: #1e3a8a;
+        box-shadow: 0 8px 32px rgba(0, 255, 255, 0.3);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        position: relative;
+        z-index: 10;
     }
+
     .chat-assistant {
-        background-color: #f0f0f0;
-        border-radius: 10px;
-        padding: 10px;
-        margin: 5px 0;
-        border-left: 4px solid #9c27b0;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(221, 160, 221, 0.7));
+        backdrop-filter: blur(20px);
+        border-radius: 15px;
+        padding: 18px 22px;
+        margin: 10px 0;
+        border-left: 4px solid #ffd700;
         color: #4a148c;
+        box-shadow: 0 8px 32px rgba(255, 215, 0, 0.25);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        position: relative;
+        z-index: 10;
     }
+
+    /* Premium sidebar header */
     .sidebar-header {
-        font-size: 1.2em;
-        font-weight: bold;
-        color: #ff7f0e;
+        font-size: 1.3em;
+        font-weight: 700;
+        background: linear-gradient(45deg, #ffd700, #ffffff);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 15px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        text-shadow: 0 0 20px rgba(255, 215, 0, 0.5);
+        position: relative;
+        z-index: 10;
     }
+
+    /* Glassmorphism login container */
     .login-container {
-        background-color: #f8f9fa;
-        padding: 20px;
-        border-radius: 10px;
-        border: 1px solid #dee2e6;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.7));
+        backdrop-filter: blur(25px);
+        padding: 30px;
+        border-radius: 20px;
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+        position: relative;
+        z-index: 10;
     }
+
+    /* Premium metric cards */
     .metric-card {
-        background-color: #f8f9fa;
-        padding: 15px;
-        border-radius: 8px;
-        border: 1px solid #dee2e6;
-        margin: 5px 0;
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.8));
+        backdrop-filter: blur(15px);
+        padding: 25px;
+        border-radius: 15px;
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        margin: 10px 0;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        position: relative;
+        z-index: 10;
+    }
+
+    /* Dynamic button effects */
+    .stButton > button {
+        background: linear-gradient(45deg, #1e3a8a, #06b6d4);
+        border: none;
+        border-radius: 10px;
+        color: white;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 15px rgba(30, 58, 138, 0.3);
+        position: relative;
+        z-index: 10;
+    }
+
+    .stButton > button:hover {
+        background: linear-gradient(45deg, #06b6d4, #7c3aed);
+        transform: translateY(-3px);
+        box-shadow: 0 8px 25px rgba(6, 182, 212, 0.4);
+    }
+
+    /* Premium input styling */
+    .stTextArea > div > div > textarea {
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.7));
+        backdrop-filter: blur(10px);
+        border: 2px solid rgba(255, 215, 0, 0.3);
+        border-radius: 12px;
+        font-family: inherit;
+        color: #1e3a8a;
+        position: relative;
+        z-index: 10;
+    }
+
+    .stTextArea > div > div > textarea:focus {
+        border-color: #ffd700;
+        box-shadow: 0 0 0 3px rgba(255, 215, 0, 0.3);
+        outline: none;
+    }
+
+    /* Vibrant text colors */
+    .stMarkdown, .stText {
+        color: #ffffff;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+        position: relative;
+        z-index: 10;
+    }
+
+    /* Premium success/warning/info messages */
+    .stSuccess, .stWarning, .stInfo {
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.7));
+        backdrop-filter: blur(15px);
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.1);
+        position: relative;
+        z-index: 10;
+    }
+
+    /* Premium sidebar styling */
+    .css-1d391kg {
+        background: linear-gradient(180deg, rgba(30, 58, 138, 0.9), rgba(124, 58, 237, 0.8));
+        backdrop-filter: blur(20px);
+        border-right: 2px solid rgba(255, 215, 0, 0.3);
+        position: relative;
+        z-index: 10;
+    }
+
+    /* Section separators with gradient */
+    .stDivider {
+        border: none;
+        height: 2px;
+        background: linear-gradient(90deg, transparent, #ffd700, #00ffff, #ff00ff, transparent);
+        margin: 30px 0;
+        position: relative;
+        z-index: 10;
+    }
+
+    /* File uploader visibility fix */
+    .stFileUploader {
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.9));
+        backdrop-filter: blur(20px);
+        border-radius: 15px;
+        padding: 20px;
+        border: 2px solid rgba(255, 215, 0, 0.3);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        position: relative;
+        z-index: 10;
+    }
+
+    .stFileUploader > div > div > div > div {
+        background-color: rgba(255, 255, 255, 0.9);
+        border-radius: 10px;
+        color: #1e3a8a;
+        font-weight: 600;
+    }
+
+    .stFileUploader > div > div > div > div:hover {
+        background-color: rgba(255, 215, 0, 0.1);
+        border-color: #ffd700;
     }
 </style>
 
