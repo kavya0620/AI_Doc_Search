@@ -49,7 +49,7 @@ pytesseract
 Pillow
 tabula-py
 PyMuPDF
-opencv-python-headless
+
 
 
 # Advanced Vector Database
