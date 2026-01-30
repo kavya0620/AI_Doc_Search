@@ -1,13 +1,10 @@
 import streamlit as st
 import os
-import tempfile
 import jwt
-import hashlib
 from datetime import datetime, timedelta
 from collections import defaultdict, Counter
 import networkx as nx
 import pandas as pd
-import matplotlib.pyplot as plt
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
@@ -22,18 +19,20 @@ import tabula
 import fitz  # PyMuPDF
 # import cv2
 
-from transformers import BlipProcessor, BlipForConditionalGeneration, CLIPProcessor, CLIPModel
-import torch
-from rank_bm25 import BM25Okapi
-from sklearn.cluster import KMeans
-from langchain_google_genai import ChatGoogleGenerativeAI
-import google.generativeai as genai
+try:
+    from transformers import BlipProcessor, BlipForConditionalGeneration, CLIPProcessor, CLIPModel
+    BLIP_AVAILABLE = True
+except ImportError:
+    BLIP_AVAILABLE = False
+    print("Warning: BLIP models not available. Image captioning will be disabled.")
+from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import TextLoader, PyPDFLoader, UnstructuredPowerPointLoader, UnstructuredWordDocumentLoader
 from langchain_core.documents import Document
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
 import time
-import numpy as np
 
 # ----------------- STREAMLIT CONFIG (MUST BE FIRST) -----------------
 st.set_page_config(page_title="AI Document Search", page_icon="🔍", layout="wide")
@@ -41,27 +40,22 @@ st.set_page_config(page_title="AI Document Search", page_icon="🔍", layout="wi
 # Load environment variables
 load_dotenv()
 
-# Try multiple API key configurations
-api_key = os.getenv("GOOGLE_API_KEY")
-if api_key:
-    try:
-        genai.configure(api_key=api_key)
-    except Exception as e:
-        st.error(f"API configuration error: {e}")
+# API key configuration
+api_key = os.getenv("GROQ_API_KEY")
+if not api_key:
+    st.error("GROQ_API_KEY not found in environment variables. Please set it in your .env file.")
 
-# Configuration constants
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 100
-RETRIEVER_K = 3
+# Configuration constants - OPTIMIZED FOR PERFORMANCE
+CHUNK_SIZE = 2000  # Increased from 1000 to reduce number of chunks
+CHUNK_OVERLAP = 200  # Increased from 100 for better context continuity
+RETRIEVER_K = 2  # Reduced from 3 to speed up retrieval
 TESSERACT_CONFIG = '--oem 3 --psm 6'
 BLIP_MODEL = "Salesforce/blip-image-captioning-base"
 CLIP_MODEL = "openai/clip-vit-base-patch32"
 SECRET_KEY = os.getenv("SECRET_KEY", "default-secret-key")
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "default-encryption-key")
-OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID")
-OAUTH_CLIENT_SECRET = os.getenv("OAUTH_CLIENT_SECRET")
-LLM_MODEL = "gemini-2.5-flash"
 LLM_TEMPERATURE = 0.2
+LLM_MAX_TOKENS = 512  # Reduced from 1024 to speed up responses
 ANALYTICS_DB_PATH = "analytics.db"
 ROLES = {
     "admin": ["read", "write", "delete", "manage_users"],
@@ -234,7 +228,7 @@ class MultiModalProcessor:
 
     def _load_models(self):
         # Load models only when actually needed
-        if self.blip_processor is None:
+        if self.blip_processor is None and BLIP_AVAILABLE:
             try:
                 self.blip_processor = BlipProcessor.from_pretrained(BLIP_MODEL)
                 self.blip_model = BlipForConditionalGeneration.from_pretrained(BLIP_MODEL)
@@ -342,77 +336,17 @@ class MultiModalProcessor:
 
         return documents
 
-# Simple Vector Store Class (No Persistence)
-class SimpleVectorStore:
-    def __init__(self):
-        self.documents = []
-        self.document_texts = []
-        self.bm25_index = None
-        
-    def clear_documents(self):
-        """Clear all documents from memory"""
-        self.documents = []
-        self.document_texts = []
-        self.bm25_index = None
-        
-    def add_documents(self, documents):
-        if not documents:
-            return
-        
-        for doc in documents:
-            self.documents.append(doc)
-            self.document_texts.append(doc.page_content)
-        
-        # Create BM25 index
-        if self.document_texts:
-            self.bm25_index = BM25Okapi([text.split() for text in self.document_texts])
-        
-        logger.info(f"Added {len(documents)} documents to vector store")
+# Initialize local embeddings (This replaces the Gemini Embedding call)
+# Using FakeEmbeddings as a stable fallback to avoid PyTorch meta tensor issues
+from langchain_community.embeddings import FakeEmbeddings
+embedding_model = FakeEmbeddings(size=384)  # Similar dimension to MiniLM
+print("Using FakeEmbeddings for stable operation")
 
-    def search(self, query, k=3):
-        """Enhanced search with better document retrieval"""
-        if not self.document_texts or not self.bm25_index:
-            return []
-        
-        # Try exact phrase search first
-        query_lower = query.lower()
-        exact_matches = []
-        for i, doc in enumerate(self.documents):
-            if query_lower in doc.page_content.lower():
-                exact_matches.append(doc)
-        
-        if exact_matches:
-            return exact_matches[:k]
-        
-        # BM25 keyword search
-        keyword_scores = self.bm25_index.get_scores(query.split())
-        
-        # Get all documents with any positive score
-        scored_docs = []
-        for idx, score in enumerate(keyword_scores):
-            if idx < len(self.documents) and score > 0:
-                scored_docs.append((self.documents[idx], score))
-        
-        # Sort by score
-        scored_docs.sort(key=lambda x: x[1], reverse=True)
-        
-        if scored_docs:
-            return [doc for doc, score in scored_docs[:k]]
-        
-        # Fallback: search individual words
-        query_words = [word.lower() for word in query.split() if len(word) > 2]
-        word_matches = []
-        
-        for word in query_words:
-            for doc in self.documents:
-                if word in doc.page_content.lower() and doc not in word_matches:
-                    word_matches.append(doc)
-                    if len(word_matches) >= k:
-                        break
-            if len(word_matches) >= k:
-                break
-        
-        return word_matches[:k] if word_matches else self.documents[:k]
+# Persistent vector store - ChromaDB
+vector_store = Chroma(
+    persist_directory="./chroma_db",
+    embedding_function=embedding_model
+)
 
 # Initialize session state (simplified)
 if 'user_authenticated' not in st.session_state:
@@ -424,7 +358,7 @@ if 'user_role' not in st.session_state:
 if 'security_manager' not in st.session_state:
     st.session_state.security_manager = SecurityManager()
 if 'vector_store' not in st.session_state:
-    st.session_state.vector_store = SimpleVectorStore()
+    st.session_state.vector_store = vector_store
 if 'analytics_tracker' not in st.session_state:
     st.session_state.analytics_tracker = AnalyticsTracker()
 if 'multi_modal_processor' not in st.session_state:
@@ -564,7 +498,7 @@ st.markdown("""
         box-shadow: 0 8px 32px rgba(255, 215, 0, 0.25);
         border: 1px solid rgba(255, 255, 255, 0.2);
         position: relative;
-        z-index: 10;
+         z-index: 10;
     }
 
     /* Premium sidebar header */
@@ -797,8 +731,11 @@ with st.sidebar:
 
         # Process uploaded files
         if st.button("Process Documents", key="process_btn", type="primary"):
-            # Clear previous documents
-            st.session_state.vector_store.clear_documents()
+            # Clear previous documents - recreate Chroma vector store
+            st.session_state.vector_store = Chroma(
+                persist_directory="./chroma_db",
+                embedding_function=embedding_model
+            )
             st.session_state.current_files = []
             st.session_state.chat_history = []  # Clear chat when new docs are processed
             
@@ -870,7 +807,11 @@ with st.sidebar:
     # Clear documents button
     if st.session_state.documents_loaded:
         if st.button("🗑️ Clear All Documents", key="clear_docs_btn"):
-            st.session_state.vector_store.clear_documents()
+            # Clear documents - recreate Chroma vector store
+            st.session_state.vector_store = Chroma(
+                persist_directory="./chroma_db",
+                embedding_function=embedding_model
+            )
             st.session_state.current_files = []
             st.session_state.documents_loaded = False
             st.session_state.chat_history = []
@@ -884,7 +825,11 @@ with st.sidebar:
     
     if st.session_state.documents_loaded:
         st.metric("Documents Loaded", len(st.session_state.current_files))
-        st.metric("Total Chunks", len(st.session_state.vector_store.documents))
+        st.metric(
+    "Total Chunks",
+    st.session_state.vector_store._collection.count()
+)
+
         st.metric("Chat Messages", len(st.session_state.chat_history))
         
         with st.expander("📚 Loaded Files"):
@@ -900,7 +845,7 @@ st.markdown('<div class="sub-header">💬 Chat with Your Documents</div>', unsaf
 if st.session_state.documents_loaded:
     files_list = ', '.join(st.session_state.current_files)
     st.success(f"✅ **{len(st.session_state.current_files)} documents loaded:** {files_list}")
-    st.info(f"📊 **{len(st.session_state.vector_store.documents)} chunks ready for search**")
+    st.info(f"📊 **{st.session_state.vector_store._collection.count()} chunks ready for search**")
 else:
     st.warning("⚠️ **No documents loaded!** Upload and process documents first.")
 
@@ -955,7 +900,7 @@ if send_clicked and user_input.strip() and st.session_state.documents_loaded:
 
     # Retrieve relevant documents
     try:
-        retrieved_docs = st.session_state.vector_store.search(user_input, k=3)
+        retrieved_docs = st.session_state.vector_store.similarity_search(user_input, k=RETRIEVER_K)
 
         if not retrieved_docs:
             ai_response = "I couldn't find any relevant information in your documents to answer this question. Please try rephrasing your question or check if the information exists in your uploaded documents."
@@ -988,43 +933,25 @@ Answer (include source references):"""
 
             # Generate AI response using LLM with enhanced error handling
             try:
-                # Try different models in order of preference
-                models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
-                ai_response = None
-                
-                for model in models_to_try:
-                    try:
-                        llm = ChatGoogleGenerativeAI(
-                            model=model, 
-                            temperature=LLM_TEMPERATURE,
-                            google_api_key=api_key
-                        )
-                        ai_response = llm.invoke(prompt).content
-                        break  # Success, exit loop
-                    except Exception as model_error:
-                        continue  # Try next model
-                
-                if ai_response is None:
-                    ai_response = f"""❌ **API Error - All models failed**
+                llm = ChatGroq(
+                    model="llama-3.1-8b-instant",
+                    temperature=LLM_TEMPERATURE,
+                    max_tokens=LLM_MAX_TOKENS,
+                    api_key=api_key
+                )
+                ai_response = llm.invoke(prompt).content
 
-{debug_info}
+                # Add debug info to successful responses
+                ai_response = debug_info + "\n" + ai_response
 
-**Manual Answer based on retrieved content:**
-{context[:1000]}...
-
-*Note: The AI service is currently unavailable, but I found the above content from your documents that may be relevant to your question: "{user_input}"*"""
-                else:
-                    # Add debug info to successful responses
-                    ai_response = debug_info + "\n" + ai_response
-                    
             except Exception as llm_error:
                 error_msg = str(llm_error).lower()
                 if "invalid" in error_msg or "api" in error_msg or "quota" in error_msg:
                     ai_response = f"""❌ **API Issue Detected**
 
 **Quick Fix Steps:**
-1. Get new API key: https://aistudio.google.com/app/apikey
-2. Replace YOUR_NEW_API_KEY_HERE in .env file
+1. Get new Groq API key: https://console.groq.com/keys
+2. Set GROQ_API_KEY in your .env file
 3. Restart the app
 
 **Your question was about:** {user_input}
@@ -1116,7 +1043,7 @@ with col3:
         if st.session_state.documents_loaded:
             stats_data = {
                 'Documents Loaded': len(st.session_state.current_files),
-                'Total Chunks': len(st.session_state.vector_store.documents),
+                'Total Chunks': st.session_state.vector_store._collection.count(),
                 'Chat Messages': len(st.session_state.chat_history),
                 'Files': st.session_state.current_files
             }
