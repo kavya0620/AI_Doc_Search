@@ -366,10 +366,7 @@ embedding_model = FakeEmbeddings(size=384)  # Similar dimension to MiniLM
 print("Using FakeEmbeddings for stable operation")
 
 # Persistent vector store - ChromaDB with explicit local settings
-chroma_client = chromadb.PersistentClient(path="/tmp/chroma_db")
-vector_store = Chroma(
-    embedding_function=embedding_model
-)
+# Note: vector_store is initialized later in session state or during document processing
 
 
 # Initialize session state (simplified)
@@ -382,7 +379,7 @@ if 'user_role' not in st.session_state:
 if 'security_manager' not in st.session_state:
     st.session_state.security_manager = SecurityManager()
 if 'vector_store' not in st.session_state:
-    st.session_state.vector_store = vector_store
+    st.session_state.vector_store = None
 if 'analytics_tracker' not in st.session_state:
     st.session_state.analytics_tracker = AnalyticsTracker()
 if 'multi_modal_processor' not in st.session_state:
