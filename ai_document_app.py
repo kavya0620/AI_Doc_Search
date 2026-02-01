@@ -12,6 +12,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 import json
 import logging
 import pytesseract
+import tempfile
 if os.name == "nt":  # Windows only
     pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 from PIL import Image
@@ -365,19 +366,8 @@ import chromadb
 embedding_model = FakeEmbeddings(size=384)  # Similar dimension to MiniLM
 print("Using FakeEmbeddings for stable operation")
 
-# Persistent vector store - ChromaDB with explicit local settings
-import tempfile
-import uuid
-
-temp_db_path = os.path.join(
-    tempfile.gettempdir(),
-    f"chroma_{uuid.uuid4().hex}"
-)
-
-st.session_state.vector_store = Chroma(
-    persist_directory=temp_db_path,
-    embedding_function=embedding_model
-)
+# Vector store will be initialized when documents are processed
+# This prevents database initialization errors on app startup
 
 
 # Initialize session state (simplified)
@@ -651,37 +641,12 @@ with st.sidebar:
                     # Don't fail the whole process if cleanup fails
                     return 0
 
-            # Try to clear existing database with better error handling
-            new_db_path = "./chroma_db"
-            db_cleared = False
-            cleanup_performed = False
-
-            try:
-                if os.path.exists("./chroma_db"):
-                    # First try to close any existing connections
-                    try:
-                        if hasattr(st.session_state, 'vector_store') and st.session_state.vector_store:
-                            # Force close any existing connections
-                            del st.session_state.vector_store
-                    except:
-                        pass
-
-                    # Try to remove the directory
-                    shutil.rmtree("./chroma_db")
-                    db_cleared = True
-            except (PermissionError, OSError) as e:
-                # If directory is locked, run cleanup and create a new unique path
-                cleaned_count = cleanup_old_databases()
-                if cleaned_count > 0:
-                    cleanup_performed = True
-                    st.info(f"🧹 Cleaned up {cleaned_count} old database(s) to free up space.")
-
-                new_db_path = f"./chroma_db_{uuid.uuid4().hex[:8]}"
-                if not cleanup_performed:
-                    st.warning(f"⚠️ Previous database is locked (Error: {str(e)}). Creating new database instance at {new_db_path}.")
-                else:
-                    st.info(f"📁 Database locked, using new instance at {new_db_path}")
-                db_cleared = True  # Consider it "cleared" since we're using a new path
+            # Use temporary directory for database to avoid file access issues
+            new_db_path = os.path.join(
+                tempfile.gettempdir(),
+                f"chroma_{uuid.uuid4().hex}"
+            )
+            db_cleared = True  # Always use new temp directory
 
             # Initialize new vector store with better error handling
             try:
