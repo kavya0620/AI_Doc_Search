@@ -366,11 +366,11 @@ embedding_model = FakeEmbeddings(size=384)  # Similar dimension to MiniLM
 print("Using FakeEmbeddings for stable operation")
 
 # Persistent vector store - ChromaDB with explicit local settings
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
+chroma_client = chromadb.PersistentClient(path="/tmp/chroma_db")
 vector_store = Chroma(
-    client=chroma_client,
     embedding_function=embedding_model
 )
+
 
 # Initialize session state (simplified)
 if 'user_authenticated' not in st.session_state:
