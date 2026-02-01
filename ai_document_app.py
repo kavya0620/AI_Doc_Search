@@ -1,7 +1,7 @@
 import streamlit as st
 import os
 import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict, Counter
 import networkx as nx
 import pandas as pd
@@ -106,7 +106,7 @@ class SecurityManager:
             payload = {
                 "username": username,
                 "role": self.users[username]["role"],
-                "exp": datetime.utcnow() + timedelta(hours=1)
+                "exp": datetime.now(timezone.utc) + timedelta(hours=1)
             }
             token = jwt.encode(payload, self.secret_key, algorithm="HS256")
             return token
@@ -116,7 +116,7 @@ class SecurityManager:
         payload = {
             "username": "oauth_user",
             "role": "student",
-            "exp": datetime.utcnow() + timedelta(hours=1)
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1)
         }
         return jwt.encode(payload, self.secret_key, algorithm="HS256")
 
@@ -614,23 +614,115 @@ with st.sidebar:
         if st.button("Process Documents", key="process_btn", type="primary"):
             # Clear previous documents - delete chroma_db directory and recreate Chroma vector store
             import shutil
+            import uuid
+            import glob
+
+            # Cleanup function to remove old locked databases
+            def cleanup_old_databases():
+                """Remove old chroma_db directories to prevent accumulation"""
+                try:
+                    # Find all chroma_db directories (including numbered ones)
+                    db_dirs = glob.glob("./chroma_db*")
+                    cleaned_count = 0
+
+                    if len(db_dirs) > 2:  # Keep only the 2 most recent
+                        # Sort by modification time (newest first)
+                        db_dirs.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+
+                        # Remove older ones
+                        for old_dir in db_dirs[2:]:  # Keep first 2, remove the rest
+                            try:
+                                shutil.rmtree(old_dir)
+                                cleaned_count += 1
+                            except Exception as cleanup_e:
+                                # If we can't remove it, it's probably still locked - skip
+                                pass
+
+                    return cleaned_count
+                except Exception as e:
+                    # Don't fail the whole process if cleanup fails
+                    return 0
+
+            # Try to clear existing database with better error handling
+            new_db_path = "./chroma_db"
+            db_cleared = False
+            cleanup_performed = False
+
             try:
                 if os.path.exists("./chroma_db"):
-                    shutil.rmtree("./chroma_db")
-            except PermissionError:
-                # If directory is locked, recreate the vector store with a new path
-                import uuid
-                new_db_path = f"./chroma_db_{uuid.uuid4().hex[:8]}"
-                st.warning("⚠️ Previous database is in use. Creating new database instance.")
-            else:
-                new_db_path = "./chroma_db"
+                    # First try to close any existing connections
+                    try:
+                        if hasattr(st.session_state, 'vector_store') and st.session_state.vector_store:
+                            # Force close any existing connections
+                            del st.session_state.vector_store
+                    except:
+                        pass
 
-            st.session_state.vector_store = Chroma(
-                persist_directory=new_db_path,
-                embedding_function=embedding_model
-            )
+                    # Try to remove the directory
+                    shutil.rmtree("./chroma_db")
+                    db_cleared = True
+            except (PermissionError, OSError) as e:
+                # If directory is locked, run cleanup and create a new unique path
+                cleaned_count = cleanup_old_databases()
+                if cleaned_count > 0:
+                    cleanup_performed = True
+                    st.info(f"🧹 Cleaned up {cleaned_count} old database(s) to free up space.")
+
+                new_db_path = f"./chroma_db_{uuid.uuid4().hex[:8]}"
+                if not cleanup_performed:
+                    st.warning(f"⚠️ Previous database is locked (Error: {str(e)}). Creating new database instance at {new_db_path}.")
+                else:
+                    st.info(f"📁 Database locked, using new instance at {new_db_path}")
+                db_cleared = True  # Consider it "cleared" since we're using a new path
+
+            # Initialize new vector store with better error handling
+            try:
+                st.session_state.vector_store = Chroma(
+                    persist_directory=new_db_path,
+                    embedding_function=embedding_model
+                )
+
+                # Test the database connection by trying to get collection count
+                try:
+                    test_count = st.session_state.vector_store._collection.count()
+                    st.info(f"Database initialized successfully at {new_db_path}")
+                except Exception as test_e:
+                    st.warning(f"Database connection test failed: {str(test_e)}. Trying to reinitialize...")
+                    # If test fails, try to recreate the database
+                    try:
+                        new_db_path = f"./chroma_db_{uuid.uuid4().hex[:8]}"
+                        st.session_state.vector_store = Chroma(
+                            persist_directory=new_db_path,
+                            embedding_function=embedding_model
+                        )
+                        st.warning(f"Created new database at {new_db_path} due to connection issues.")
+                    except Exception as recreate_e:
+                        st.error(f"Failed to create new database: {str(recreate_e)}")
+                        st.stop()
+
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "readonly" in error_msg or "permission" in error_msg:
+                    st.error("❌ **Database Permission Error**")
+                    st.error("The database files are read-only or locked. This can happen if:")
+                    st.error("- The application was not properly closed")
+                    st.error("- File permissions are incorrect")
+                    st.error("- Another instance of the app is running")
+                    st.info("**Solutions:**")
+                    st.info("1. Close all browser tabs with this app")
+                    st.info("2. Wait a few seconds and try again")
+                    st.info("3. If issue persists, restart your computer")
+                    st.stop()
+                else:
+                    st.error(f"Failed to initialize vector database: {str(e)}")
+                    st.error("Please try clearing browser cache or restarting the application.")
+                    st.stop()
+
             st.session_state.current_files = []
             st.session_state.chat_history = []  # Clear chat when new docs are processed
+
+            if db_cleared and new_db_path != "./chroma_db":
+                st.info(f"📁 Using new database location: {new_db_path}")
             
             with st.spinner("Processing documents..."):
                 total_chunks = 0
