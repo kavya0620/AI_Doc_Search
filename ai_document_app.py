@@ -366,7 +366,18 @@ embedding_model = FakeEmbeddings(size=384)  # Similar dimension to MiniLM
 print("Using FakeEmbeddings for stable operation")
 
 # Persistent vector store - ChromaDB with explicit local settings
-# Note: vector_store is initialized later in session state or during document processing
+import tempfile
+import uuid
+
+temp_db_path = os.path.join(
+    tempfile.gettempdir(),
+    f"chroma_{uuid.uuid4().hex}"
+)
+
+st.session_state.vector_store = Chroma(
+    persist_directory=temp_db_path,
+    embedding_function=embedding_model
+)
 
 
 # Initialize session state (simplified)
