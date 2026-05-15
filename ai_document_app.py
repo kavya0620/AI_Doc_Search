@@ -36,7 +36,12 @@ from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import TextLoader, PyPDFLoader, UnstructuredPowerPointLoader, UnstructuredWordDocumentLoader
 from langchain_core.documents import Document
-from langchain_community.embeddings import HuggingFaceEmbeddings
+try:
+    from langchain_huggingface import HuggingFaceEmbeddings
+    print("Importing HuggingFaceEmbeddings from langchain_huggingface")
+except ImportError:
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    print("Importing HuggingFaceEmbeddings from langchain_community as fallback")
 from langchain_community.vectorstores import Chroma
 import time
 # ---------- TEXT CLEANING (UTF-8 PDF FIX) ----------
@@ -70,7 +75,7 @@ if not api_key:
 # Configuration constants - OPTIMIZED FOR PERFORMANCE
 CHUNK_SIZE = 2000  # Increased from 1000 to reduce number of chunks
 CHUNK_OVERLAP = 200  # Increased from 100 for better context continuity
-RETRIEVER_K = 2  # Reduced from 3 to speed up retrieval
+RETRIEVER_K = 4  # Increased to capture more relevant chunks
 TESSERACT_CONFIG = '--oem 3 --psm 6'
 BLIP_MODEL = "Salesforce/blip-image-captioning-base"
 CLIP_MODEL = "openai/clip-vit-base-patch32"
@@ -360,11 +365,15 @@ class MultiModalProcessor:
         return documents
 
 # Initialize local embeddings (This replaces the Gemini Embedding call)
-# Using FakeEmbeddings as a stable fallback to avoid PyTorch meta tensor issues
-from langchain_community.embeddings import FakeEmbeddings
+# Prefer real semantic embeddings when available, fall back to FakeEmbeddings only if needed.
 import chromadb
-embedding_model = FakeEmbeddings(size=384)  # Similar dimension to MiniLM
-print("Using FakeEmbeddings for stable operation")
+try:
+    embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    print("Using HuggingFaceEmbeddings (sentence-transformers/all-MiniLM-L6-v2)")
+except Exception as e:
+    from langchain_community.embeddings import FakeEmbeddings
+    embedding_model = FakeEmbeddings(size=384)  # Similar dimension to MiniLM
+    print(f"Using FakeEmbeddings for stable operation: {e}")
 
 # Vector store will be initialized when documents are processed
 # This prevents database initialization errors on app startup
@@ -891,8 +900,9 @@ if send_clicked and user_input.strip() and st.session_state.documents_loaded:
 
 IMPORTANT INSTRUCTIONS:
 - Answer ONLY using information from the provided document content below.
-- Be specific and quote relevant parts of the documents when possible.
-- If you cannot find the exact answer, summarize what related information is available.
+- If the document contains an exact definition or explanation, quote it verbatim.
+- Do not invent or infer answers that are not present in the text.
+- If the exact answer is not present, say so clearly and summarize the closest related information.
 - Always reference which document or section the information comes from.
 
 Document Content:
